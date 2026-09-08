@@ -4,230 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LG TV Remote</title>
-<style>
-  :root {
-    --bezel-1: #1c1f24;
-    --bezel-2: #0d0f12;
-    --panel: #15181c;
-    --panel-raised: #1d2126;
-    --text: #e8e6e2;
-    --text-dim: #8b9096;
-    --glow: #e8963e;
-    --glow-dim: #6b4b26;
-    --danger: #d9614f;
-    --ok: #57b894;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    min-height: 100vh;
-    background: radial-gradient(ellipse at 50% -10%, #23272c 0%, #0a0b0d 60%);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: var(--text);
-    display: flex;
-    justify-content: center;
-    padding: 32px 16px 64px;
-  }
-  .remote {
-    width: 100%;
-    max-width: 380px;
-    background: linear-gradient(180deg, var(--bezel-1), var(--bezel-2));
-    border-radius: 32px;
-    padding: 22px;
-    box-shadow: 0 30px 60px -20px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.04);
-    border: 1px solid rgba(255,255,255,.06);
-  }
-  .top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 2px 4px 16px;
-  }
-  .top h1 {
-    font-size: 17px;
-    font-weight: 600;
-    margin: 0;
-    letter-spacing: .2px;
-  }
-  .status {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--text-dim);
-  }
-  .status-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: #565b61;
-    transition: background .2s;
-  }
-  .status-dot.connecting { background: var(--glow); box-shadow: 0 0 8px var(--glow); animation: pulse 1s infinite; }
-  .status-dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-  .status-dot.error { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
-  @keyframes pulse { 50% { opacity: .4; } }
-
-  .connect-bar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 18px;
-  }
-  .connect-bar input {
-    flex: 1;
-    min-width: 0;
-    background: var(--panel);
-    border: 1px solid rgba(255,255,255,.08);
-    border-radius: 12px;
-    padding: 10px 12px;
-    color: var(--text);
-    font-size: 14px;
-  }
-  .connect-bar input::placeholder { color: #5c6167; }
-  .btn {
-    appearance: none;
-    border: none;
-    background: var(--panel-raised);
-    color: var(--text);
-    border-radius: 12px;
-    padding: 10px 14px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    border: 1px solid rgba(255,255,255,.06);
-    transition: transform .05s, background .15s;
-  }
-  .btn:active { transform: scale(.95); }
-  .btn.primary { background: var(--glow); color: #241503; }
-  .btn.ghost { background: transparent; color: var(--text-dim); border-color: rgba(255,255,255,.08); }
-
-  .row { display: flex; gap: 10px; margin-bottom: 12px; }
-  .row.center { justify-content: center; }
-
-  .circle {
-    width: 54px; height: 54px;
-    border-radius: 50%;
-    background: var(--panel-raised);
-    border: 1px solid rgba(255,255,255,.07);
-    color: var(--text);
-    font-size: 18px;
-    display: flex; align-items: center; justify-content: center;
-    cursor: pointer;
-    box-shadow: 0 2px 0 rgba(0,0,0,.4);
-  }
-  .circle:active { transform: translateY(1px); box-shadow: none; }
-  .circle.power { color: var(--danger); }
-  .circle.power:active, .circle.power.on { color: var(--glow); }
-  .circle.small { width: 44px; height: 44px; font-size: 15px; }
-
-  .dpad {
-    width: 190px;
-    height: 190px;
-    margin: 4px auto 14px;
-    position: relative;
-    border-radius: 50%;
-    background: radial-gradient(circle at 50% 40%, #22262b, #121417 75%);
-    border: 1px solid rgba(255,255,255,.06);
-    box-shadow: inset 0 2px 6px rgba(0,0,0,.5);
-  }
-  .dpad button {
-    position: absolute;
-    background: transparent;
-    border: none;
-    color: var(--text-dim);
-    font-size: 20px;
-    cursor: pointer;
-    width: 60px; height: 60px;
-  }
-  .dpad button:active { color: var(--glow); }
-  .dpad .up    { top: 6px; left: 50%; transform: translateX(-50%); }
-  .dpad .down  { bottom: 6px; left: 50%; transform: translateX(-50%); }
-  .dpad .left  { left: 6px; top: 50%; transform: translateY(-50%); }
-  .dpad .right { right: 6px; top: 50%; transform: translateY(-50%); }
-  .dpad .enter {
-    top: 50%; left: 50%; transform: translate(-50%,-50%);
-    width: 70px; height: 70px; border-radius: 50%;
-    background: var(--panel-raised);
-    color: var(--text);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: .5px;
-    border: 1px solid rgba(255,255,255,.1);
-  }
-  .dpad .enter:active { color: var(--glow); border-color: var(--glow-dim); }
-
-  .transport { display: flex; justify-content: space-between; margin-bottom: 16px; }
-
-  .rocker {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: var(--panel);
-    border-radius: 14px;
-    padding: 6px;
-    margin-bottom: 10px;
-    border: 1px solid rgba(255,255,255,.06);
-  }
-  .rocker span { font-size: 12px; color: var(--text-dim); flex: 1; text-align: center; }
-  .rocker button {
-    background: var(--panel-raised);
-    border: none;
-    color: var(--text);
-    width: 40px; height: 34px;
-    border-radius: 10px;
-    font-size: 16px;
-    cursor: pointer;
-  }
-  .rocker button:active { color: var(--glow); }
-
-  .section {
-    margin-top: 18px;
-    border-top: 1px solid rgba(255,255,255,.06);
-    padding-top: 14px;
-  }
-  .section-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 10px;
-  }
-  .section-head h2 { font-size: 13px; margin: 0; font-weight: 600; color: var(--text-dim); }
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
-  .chip {
-    background: var(--panel-raised);
-    border: 1px solid rgba(255,255,255,.07);
-    color: var(--text);
-    border-radius: 10px;
-    padding: 8px 10px;
-    font-size: 12.5px;
-    cursor: pointer;
-  }
-  .chip:active { color: var(--glow); }
-  .placeholder { font-size: 12.5px; color: var(--text-dim); }
-
-  details.log-panel { margin-top: 16px; }
-  details.log-panel summary {
-    font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none;
-  }
-  #log {
-    margin-top: 8px;
-    background: #0a0b0d;
-    border-radius: 10px;
-    padding: 10px;
-    font-size: 10.5px;
-    line-height: 1.5;
-    color: #7d8790;
-    max-height: 160px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  .hint {
-    font-size: 11.5px;
-    color: #666b70;
-    line-height: 1.6;
-    margin: 16px 4px 0;
-  }
-  .hint a { color: var(--text-dim); }
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="remote">
@@ -370,7 +147,20 @@ function tryConnect(url, onFail) {
     register();
   };
   ws.onerror = () => { if (!settled) { settled = true; clearTimeout(timer); onFail(); } };
-  ws.onclose = () => { if (state.ws === ws) { state.ws = null; setStatus('Disconnected', 'error'); log('Socket closed.'); } };
+  ws.onclose = (ev) => {
+    if (state.ws === ws) {
+      state.ws = null;
+      setStatus('Disconnected', 'error');
+      log(`Socket closed. code=${ev.code} reason="${ev.reason || '(none)'}" wasClean=${ev.wasClean}`);
+      if (ev.code === 1006) {
+        log('Hint: code 1006 (abnormal closure, no close frame) usually means the TV-side pairing service dropped the connection — check that "LG Connect Apps" / Mobile TV is enabled in the TV\'s network settings, and watch the TV screen for a pairing prompt on your next attempt.');
+      } else if (ev.code === 1002 || ev.code === 1003) {
+        log('Hint: this code indicates a protocol error — the register payload/manifest may be malformed or contain permissions the TV rejects.');
+      } else if (ev.code === 1008) {
+        log('Hint: code 1008 "invalid origin" means the TV is rejecting the browser\'s Origin header. LG webOS TVs only accept connections with no Origin header, which requires opening this file directly from disk (file:// — double-click it) rather than loading it from any web server, including localhost. This cannot be fixed in JavaScript; the browser controls the Origin header.');
+      }
+    }
+  };
   ws.onmessage = handleMessage;
 }
 
@@ -394,7 +184,7 @@ function register() {
       permissions: ["TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD","READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER","READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO","UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"],
       serial: "2f930e2d2cfe083771f68e4fe7bb07"
     },
-    permissions: ["LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","TEST_OPEN","TEST_PROTECTED","CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING","CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE","READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE","READ_COUNTRY_INFO"],
+    permissions: ["LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE","READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE","READ_COUNTRY_INFO"],
     signatures: [{
       signatureVersion: 1,
       signature: "eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbmctY2VydCIsInNpZ25hdHVyZVZlcnNpb24iOjF9.hrVRgjCwXVvE2OOSpDZ58hR+59aFNwYDyjQgKk3auukd7pcegmE2CzPCa0bJ0ZsRAcKkCTJrWo5iDzNhMBWRyaMOv5zWSrthlf7G128qvIlpMT0YNY+n/FaOHE73uLrS/g7swl3/qH/BGFG2Hu4RlL48eb3lLKqTt2xKHdCs6Cd4RMfJPYnzgvI4BNrFUKsjkcu+WD4OO2A27Pq1n50cMchmcaXadJhGrOqH5YmHdOCj5NSHzJYrsW0HPlpuAx/ECMeIZYDh6RMqaFM2DXzdKX9NmmyqzJ3o/0lkk/N97gfVRLW5hA29yeAwaCViZNCP8iC9aO0q9fQojoa7NQnAtw=="
