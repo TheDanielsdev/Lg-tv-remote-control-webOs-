@@ -1,0 +1,44 @@
+name: Commit Guard
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          URL=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | grep "browser_download_url.*linux_x64.tar.gz\"" \
+            | cut -d '"' -f4)
+          curl -sSfL "$URL" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+      - name: Install osv-scanner
+        run: |
+          URL=$(curl -s https://api.github.com/repos/google/osv-scanner/releases/latest \
+            | grep "browser_download_url.*osv-scanner_.*_linux_amd64\"" \
+            | cut -d '"' -f4)
+          curl -sSfL "$URL" -o osv-scanner
+          chmod +x osv-scanner
+          sudo mv osv-scanner /usr/local/bin/
+
+      - name: Install semgrep
+        run: pip install semgrep
+
+      - name: Run Commit Guard
+        uses: TheDanielsdev/commit-guard@v1
+        with:
+          fail-on: high
+          github-token: ${{ secrets.GITHUB_TOKEN }}
