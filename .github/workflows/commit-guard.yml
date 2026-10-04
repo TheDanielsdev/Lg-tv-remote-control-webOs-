@@ -42,3 +42,19 @@ jobs:
         with:
           fail-on: high
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  syntax-check:
+    name: JavaScript syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check inline JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path("index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script[^>]*>(.*?)</script>", html, flags=re.S)
+          Path("/tmp/inline.js").write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check /tmp/inline.js
