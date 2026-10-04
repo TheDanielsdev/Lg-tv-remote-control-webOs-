@@ -14,8 +14,9 @@
   </div>
 
   <div class="connect-bar">
-    <input id="ip-input" placeholder="TV IP address, e.g. 192.168.1.42" inputmode="decimal">
+    <input id="ip-input" placeholder="TV IP address, e.g. 192.168.1.42" inputmode="decimal" autocomplete="off">
     <button class="btn primary" id="btn-connect">Connect</button>
+    <button class="btn ghost" id="btn-forget" title="Forget saved pairing">Forget</button>
   </div>
 
   <div class="row">
@@ -38,7 +39,7 @@
     <button class="btn ghost" data-btn="EXIT">Exit</button>
   </div>
 
-  <div class="transport" style="margin-top:14px">
+  <div class="transport">
     <button class="circle small" data-media="rewind">⏮</button>
     <button class="circle small" data-media="play">⏵</button>
     <button class="circle small" data-media="pause">⏸</button>
@@ -47,226 +48,467 @@
   </div>
 
   <div class="rocker">
-    <button id="vol-down">–</button>
-    <span>Volume</span>
-    <button id="vol-up">+</button>
+    <button id="vol-down">–</button><span>Volume</span><button id="vol-up">+</button>
   </div>
   <div class="rocker">
-    <button id="ch-down">–</button>
-    <span>Channel</span>
-    <button id="ch-up">+</button>
+    <button id="ch-down">–</button><span>Channel</span><button id="ch-up">+</button>
   </div>
 
   <div class="section">
-    <div class="section-head">
-      <h2>Inputs</h2>
-      <button class="btn ghost" id="btn-load-inputs">Load</button>
-    </div>
+    <div class="section-head"><h2>Inputs</h2><button class="btn ghost" id="btn-load-inputs">Load</button></div>
     <div class="chips" id="inputs-list"><span class="placeholder">Not loaded yet.</span></div>
   </div>
 
   <div class="section">
-    <div class="section-head">
-      <h2>Apps</h2>
-      <button class="btn ghost" id="btn-load-apps">Load</button>
-    </div>
+    <div class="section-head"><h2>Apps</h2><button class="btn ghost" id="btn-load-apps">Load</button></div>
     <div class="chips" id="apps-list"><span class="placeholder">Not loaded yet.</span></div>
   </div>
 
-  <details class="log-panel">
-    <summary>Connection log</summary>
-    <pre id="log"></pre>
-  </details>
+  <details class="log-panel"><summary>Connection log</summary><pre id="log"></pre></details>
 
   <p class="hint">
-    Your computer/phone and the TV must be on the same Wi-Fi network. On first connect, a prompt appears on the TV screen — accept it there. Newer LG TVs require a secure connection (wss, port 3001) with a self-signed certificate: if connecting fails, click "Trust certificate" below, accept the browser warning, then try Connect again. This app runs entirely in your browser and only talks directly to your TV — nothing is sent anywhere else.
+    Your computer/phone and the TV must be on the same Wi-Fi network. On first connect, accept the pairing prompt on the TV.
+    Newer LG TVs may require a secure connection and certificate trust. Browser security restrictions can prevent a hosted page
+    from connecting directly to a TV; if that happens, use a local file workflow or a small LAN relay.
     <br><br>
-    <a href="#" id="trust-link">Trust certificate for this TV →</a>
+    <a href="#" id="trust-link">Open certificate endpoint →</a>
   </p>
 </div>
 
 <script>
-const state = { ws: null, pointerWs: null, ip: '', reqId: 1, pending: new Map(), muted: false };
+'use strict';
+
+const state = {
+  ws: null,
+  pointerWs: null,
+  pointerSocketPromise: null,
+  ip: '',
+  reqId: 1,
+  pending: new Map(),
+  muted: false,
+  volume: null,
+  power: null,
+  connected: false,
+  reconnectTimer: null,
+  reconnectAttempt: 0,
+  manualDisconnect: false,
+  generation: 0,
+  registerTimer: null
+};
+
+const MAX_RECONNECT_ATTEMPTS = 5;
+const REQUEST_TIMEOUT = 8000;
 
 function $(id) { return document.getElementById(id); }
+
 function log(msg) {
   const el = $('log');
-  el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  el.textContent += '[' + new Date().toLocaleTimeString() + '] ' + msg + '\n';
   el.scrollTop = el.scrollHeight;
 }
+
 function setStatus(text, cls) {
   $('status-text').textContent = text;
   $('status-dot').className = 'status-dot ' + (cls || '');
 }
+
 function keyFor(ip) { return 'lgremote_key_' + ip; }
 
-// Restore last-used IP
+function setControlsEnabled(enabled) {
+  document.querySelectorAll('button').forEach(btn => {
+    if (btn.id === 'btn-connect' || btn.id === 'btn-forget') return;
+    btn.disabled = !enabled;
+  });
+}
+
+function updateMuteButton() {
+  $('btn-mute').textContent = state.muted ? '🔈' : '🔇';
+  $('btn-mute').title = state.muted ? 'Unmute' : 'Mute';
+}
+
+function validateHost(value) {
+  if (!value || value.length > 253 || /[\\s/]/.test(value)) return false;
+  if (/^[0-9.]+$/.test(value)) {
+    const p = value.split('.');
+    return p.length === 4 && p.every(x => /^\d+$/.test(x) && Number(x) <= 255);
+  }
+  return /^[a-zA-Z0-9.-]+$/.test(value);
+}
+
+function clearPendingRequests(error) {
+  for (const item of state.pending.values()) item.reject(error);
+  state.pending.clear();
+}
+
+function scheduleReconnect() {
+  if (state.manualDisconnect || !state.ip || state.reconnectTimer ||
+      state.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) return;
+
+  const delay = Math.min(1000 * (2 ** state.reconnectAttempt), 15000);
+  state.reconnectAttempt++;
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    connect(true);
+  }, delay);
+  setStatus('Reconnecting…', 'connecting');
+  log('Retrying connection in ' + Math.round(delay / 1000) + 's');
+}
+
+function forgetPairing() {
+  const ip = $('ip-input').value.trim() || state.ip;
+  if (!ip) return;
+  localStorage.removeItem(keyFor(ip));
+  log('Saved pairing key removed for ' + ip);
+  state.manualDisconnect = false;
+  connect(false);
+}
+
+$('trust-link').addEventListener('click', e => {
+  e.preventDefault();
+  const ip = $('ip-input').value.trim();
+  if (!validateHost(ip)) {
+    setStatus('Enter the TV IP first', 'error');
+    return;
+  }
+  window.open('https://' + ip + ':3001', '_blank', 'noopener');
+});
+
+$('btn-connect').addEventListener('click', () => connect(false));
+$('btn-forget').addEventListener('click', forgetPairing);
+
 window.addEventListener('DOMContentLoaded', () => {
   const savedIp = localStorage.getItem('lgremote_last_ip');
   if (savedIp) $('ip-input').value = savedIp;
+  setControlsEnabled(false);
+  updateMuteButton();
 });
 
-$('trust-link').addEventListener('click', (e) => {
-  e.preventDefault();
-  const ip = $('ip-input').value.trim();
-  if (!ip) { setStatus('Enter the TV IP first', 'error'); return; }
-  window.open(`https://${ip}:3001`, '_blank');
-});
+function closeSockets() {
+  if (state.ws) { try { state.ws.close(); } catch (_) {} state.ws = null; }
+  if (state.pointerWs) { try { state.pointerWs.close(); } catch (_) {} state.pointerWs = null; }
+  state.pointerSocketPromise = null;
+  if (state.registerTimer) { clearTimeout(state.registerTimer); state.registerTimer = null; }
+}
 
-$('btn-connect').addEventListener('click', connect);
-
-function connect() {
+function connect(isReconnect) {
   const ip = $('ip-input').value.trim();
-  if (!ip) { setStatus("Enter your TV's IP address", 'error'); return; }
+  if (!validateHost(ip)) {
+    setStatus('Enter a valid TV IP address or hostname', 'error');
+    return;
+  }
+
   state.ip = ip;
+  state.manualDisconnect = false;
+  state.generation++;
+  if (!isReconnect) state.reconnectAttempt = 0;
   localStorage.setItem('lgremote_last_ip', ip);
-  if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
-  if (state.pointerWs) { try { state.pointerWs.close(); } catch (e) {} state.pointerWs = null; }
+
+  if (state.reconnectTimer) {
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+  }
+
+  closeSockets();
+  clearPendingRequests(new Error('Connection restarted'));
+  state.connected = false;
+  setControlsEnabled(false);
   setStatus('Connecting…', 'connecting');
-  log(`Trying secure connection to wss://${ip}:3001 …`);
-  tryConnect(`wss://${ip}:3001`, () => {
-    log(`Secure attempt failed. Trying legacy ws://${ip}:3000 …`);
-    tryConnect(`ws://${ip}:3000`, () => {
+
+  const generation = state.generation;
+  log('Trying secure connection to wss://' + ip + ':3001 …');
+
+  tryConnect('wss://' + ip + ':3001', generation, () => {
+    log('Secure attempt failed. Trying legacy ws://' + ip + ':3000 …');
+    tryConnect('ws://' + ip + ':3000', generation, () => {
       setStatus('Could not reach the TV', 'error');
-      log('Both connection attempts failed. Check the IP, the network, and (for newer TVs) trust the certificate first.');
+      log('Both connection attempts failed. Check IP, network, certificate, and LG Connect Apps/Mobile TV.');
+      scheduleReconnect();
     });
   });
 }
 
-function tryConnect(url, onFail) {
+function tryConnect(url, generation, onFail) {
   let settled = false;
   let ws;
-  try { ws = new WebSocket(url); } catch (e) { onFail(); return; }
+
+  try { ws = new WebSocket(url); }
+  catch (e) { onFail(); return; }
+
   const timer = setTimeout(() => {
-    if (!settled) { settled = true; try { ws.close(); } catch (e) {} onFail(); }
+    if (!settled) {
+      settled = true;
+      try { ws.close(); } catch (_) {}
+      onFail();
+    }
   }, 4000);
+
   ws.onopen = () => {
-    settled = true; clearTimeout(timer);
+    if (generation !== state.generation) { try { ws.close(); } catch (_) {} return; }
+    settled = true;
+    clearTimeout(timer);
     state.ws = ws;
-    log(`Socket open: ${url}`);
-    register();
+    log('Socket open: ' + url);
+    register(generation);
   };
-  ws.onerror = () => { if (!settled) { settled = true; clearTimeout(timer); onFail(); } };
-  ws.onclose = (ev) => {
-    if (state.ws === ws) {
-      state.ws = null;
-      setStatus('Disconnected', 'error');
-      log(`Socket closed. code=${ev.code} reason="${ev.reason || '(none)'}" wasClean=${ev.wasClean}`);
-      if (ev.code === 1006) {
-        log('Hint: code 1006 (abnormal closure, no close frame) usually means the TV-side pairing service dropped the connection — check that "LG Connect Apps" / Mobile TV is enabled in the TV\'s network settings, and watch the TV screen for a pairing prompt on your next attempt.');
-      } else if (ev.code === 1002 || ev.code === 1003) {
-        log('Hint: this code indicates a protocol error — the register payload/manifest may be malformed or contain permissions the TV rejects.');
-      } else if (ev.code === 1008) {
-        log('Hint: code 1008 "invalid origin" means the TV is rejecting the browser\'s Origin header. LG webOS TVs only accept connections with no Origin header, which requires opening this file directly from disk (file:// — double-click it) rather than loading it from any web server, including localhost. This cannot be fixed in JavaScript; the browser controls the Origin header.');
-      }
+
+  ws.onerror = () => {
+    if (!settled) {
+      settled = true;
+      clearTimeout(timer);
+      onFail();
     }
   };
+
   ws.onmessage = handleMessage;
+
+  ws.onclose = ev => {
+    if (state.ws !== ws) return;
+
+    state.ws = null;
+    state.connected = false;
+    if (state.pointerWs) { try { state.pointerWs.close(); } catch (_) {} }
+    state.pointerWs = null;
+    state.pointerSocketPromise = null;
+    if (state.registerTimer) { clearTimeout(state.registerTimer); state.registerTimer = null; }
+
+    clearPendingRequests(new Error('TV connection closed'));
+    setControlsEnabled(false);
+    setStatus('Disconnected', 'error');
+    log('Socket closed. code=' + ev.code + ' reason="' + (ev.reason || '(none)') + '" wasClean=' + ev.wasClean);
+
+    if (ev.code === 1008) {
+      log('Hint: the TV rejected the browser Origin. JavaScript cannot remove Origin; use file:// or a LAN relay where supported.');
+    } else if (ev.code === 1002 || ev.code === 1003) {
+      log('Hint: protocol/registration error. Check WebOS manifest and permissions.');
+    } else if (ev.code === 1006) {
+      log('Hint: abnormal closure. Check LG Connect Apps/Mobile TV and the pairing prompt.');
+    }
+
+    scheduleReconnect();
+  };
 }
 
 function send(obj) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    throw new Error('Not connected');
+  }
   state.ws.send(JSON.stringify(obj));
   log('→ ' + obj.type + (obj.uri ? ' ' + obj.uri : ''));
 }
 
-function register() {
+function register(generation) {
   setStatus('Registering…', 'connecting');
-  const storedKey = localStorage.getItem(keyFor(state.ip)) || undefined;
+
+  const storedKey = localStorage.getItem(keyFor(state.ip));
   const manifest = {
     manifestVersion: 1,
-    appVersion: "1.1",
-    signed: {
-      created: "20140509",
-      appId: "com.lge.test",
-      vendorId: "com.lge",
-      localizedAppNames: { "": "LG Remote App", "ko-KR": "리모컨 앱", "zxx-XX": "ЛГ Rэмotэ AПП" },
-      localizedVendorNames: { "": "LG Electronics" },
-      permissions: ["TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD","READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER","READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO","UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"],
-      serial: "2f930e2d2cfe083771f68e4fe7bb07"
-    },
-    permissions: ["LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE","READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE","READ_COUNTRY_INFO"],
-    signatures: [{
-      signatureVersion: 1,
-      signature: "eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbmctY2VydCIsInNpZ25hdHVyZVZlcnNpb24iOjF9.hrVRgjCwXVvE2OOSpDZ58hR+59aFNwYDyjQgKk3auukd7pcegmE2CzPCa0bJ0ZsRAcKkCTJrWo5iDzNhMBWRyaMOv5zWSrthlf7G128qvIlpMT0YNY+n/FaOHE73uLrS/g7swl3/qH/BGFG2Hu4RlL48eb3lLKqTt2xKHdCs6Cd4RMfJPYnzgvI4BNrFUKsjkcu+WD4OO2A27Pq1n50cMchmcaXadJhGrOqH5YmHdOCj5NSHzJYrsW0HPlpuAx/ECMeIZYDh6RMqaFM2DXzdKX9NmmyqzJ3o/0lkk/N97gfVRLW5hA29yeAwaCViZNCP8iC9aO0q9fQojoa7NQnAtw=="
-    }]
+    appVersion: '1.0',
+    permissions: [
+      'LAUNCH',
+      'LAUNCH_WEBAPP',
+      'APP_TO_APP',
+      'CLOSE',
+      'CONTROL_AUDIO',
+      'CONTROL_DISPLAY',
+      'CONTROL_INPUT_JOYSTICK',
+      'CONTROL_INPUT_MEDIA_PLAYBACK',
+      'CONTROL_INPUT_TV',
+      'CONTROL_POWER',
+      'CONTROL_MOUSE_AND_KEYBOARD',
+      'CONTROL_INPUT_TEXT',
+      'READ_APP_STATUS',
+      'READ_CURRENT_CHANNEL',
+      'READ_INPUT_DEVICE_LIST',
+      'READ_NETWORK_STATE',
+      'READ_RUNNING_APPS',
+      'READ_TV_CHANNEL_LIST',
+      'WRITE_NOTIFICATION_TOAST',
+      'READ_POWER_STATE',
+      'READ_COUNTRY_INFO'
+    ]
   };
+
   const payload = { forcePairing: false, pairingType: 'PROMPT', manifest };
   if (storedKey) payload['client-key'] = storedKey;
-  send({ type: 'register', id: 'register_0', payload });
+
+  state.registerTimer = setTimeout(() => {
+    if (generation === state.generation && state.ws) {
+      log('Registration timed out.');
+      try { state.ws.close(); } catch (_) {}
+    }
+  }, 10000);
+
+  try {
+    send({ type: 'register', id: 'register_0', payload });
+  } catch (e) {
+    log('Registration send failed: ' + e.message);
+  }
 }
 
 function handleMessage(event) {
   let data;
-  try { data = JSON.parse(event.data); } catch (e) { log('Non-JSON message received'); return; }
-  log('← ' + (data.type || '') + ' ' + JSON.stringify(data).slice(0, 160));
+  try { data = JSON.parse(event.data); }
+  catch (_) { log('Non-JSON message received'); return; }
+
+  log('← ' + (data.type || '') + ' ' + JSON.stringify(data).slice(0, 300));
 
   if (data.id === 'register_0') {
     if (data.type === 'registered') {
+      if (state.registerTimer) { clearTimeout(state.registerTimer); state.registerTimer = null; }
       const key = data.payload && data.payload['client-key'];
       if (key) localStorage.setItem(keyFor(state.ip), key);
+
+      state.connected = true;
+      state.reconnectAttempt = 0;
+      setControlsEnabled(true);
       setStatus('Connected', 'ok');
+      syncTvState();
     } else if (data.type === 'response' && data.payload && data.payload.pairingType) {
       setStatus('Accept the connection on your TV', 'connecting');
     } else if (data.type === 'error') {
+      if (state.registerTimer) { clearTimeout(state.registerTimer); state.registerTimer = null; }
       setStatus('Registration failed', 'error');
-      log('Error: ' + data.error);
+      log('Registration error: ' + (data.error || data.payload?.errorText || 'Unknown error'));
+      try { state.ws?.close(); } catch (_) {}
     }
     return;
   }
-  if (state.pending.has(data.id)) {
-    const { resolve, reject } = state.pending.get(data.id);
-    state.pending.delete(data.id);
-    if (data.type === 'error') reject(new Error(data.error || 'Request failed'));
-    else resolve(data);
+
+  const pending = state.pending.get(data.id);
+  if (!pending) return;
+
+  state.pending.delete(data.id);
+
+  const payload = data.payload || {};
+  if (data.type === 'error' || payload.returnValue === false) {
+    const message = data.error || payload.errorText || payload.errorCode || 'Request failed';
+    pending.reject(new Error(String(message)));
+  } else {
+    pending.resolve(data);
   }
 }
 
 function sendRequest(uri, payload) {
   return new Promise((resolve, reject) => {
-    if (!state.ws || state.ws.readyState !== 1) { reject(new Error('Not connected')); return; }
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      reject(new Error('Not connected'));
+      return;
+    }
+
     const id = 'req_' + (state.reqId++);
-    state.pending.set(id, { resolve, reject });
-    send({ type: 'request', id, uri, payload: payload || {} });
+    state.pending.set(id, { resolve, reject, uri });
+
+    try {
+      send({ type: 'request', id, uri, payload: payload || {} });
+    } catch (e) {
+      state.pending.delete(id);
+      reject(e);
+      return;
+    }
+
     setTimeout(() => {
-      if (state.pending.has(id)) { state.pending.delete(id); reject(new Error('Request timed out')); }
-    }, 8000);
+      if (state.pending.has(id)) {
+        state.pending.delete(id);
+        reject(new Error('Request timed out: ' + uri));
+      }
+    }, REQUEST_TIMEOUT);
   });
 }
 
 async function cmd(uri, payload) {
-  try { await sendRequest(uri, payload); }
-  catch (e) { log('Error on ' + uri + ': ' + e.message); setStatus(e.message, 'error'); }
+  try {
+    await sendRequest(uri, payload);
+  } catch (e) {
+    log('Error on ' + uri + ': ' + e.message);
+    setStatus(e.message, 'error');
+  }
+}
+
+async function syncTvState() {
+  try {
+    const audio = await sendRequest('ssap://audio/getStatus');
+    const p = audio.payload || {};
+    if (typeof p.muted === 'boolean') state.muted = p.muted;
+    else if (typeof p.mute === 'boolean') state.muted = p.mute;
+    if (typeof p.volume === 'number') state.volume = p.volume;
+    updateMuteButton();
+  } catch (e) {
+    log('Audio state unavailable: ' + e.message);
+  }
+
+  try {
+    state.power = await sendRequest('ssap://com.webos.service.tvpower/power/getPowerState');
+  } catch (e) {
+    log('Power state unavailable: ' + e.message);
+  }
 }
 
 async function ensurePointerSocket() {
-  if (state.pointerWs && state.pointerWs.readyState === 1) return state.pointerWs;
-  const res = await sendRequest('ssap://com.webos.service.networkinput/getPointerInputSocket');
-  const path = res.payload && res.payload.socketPath;
-  if (!path) throw new Error('TV did not return a pointer socket');
-  return new Promise((resolve, reject) => {
-    const pws = new WebSocket(path);
-    pws.onopen = () => { state.pointerWs = pws; log('Pointer socket ready'); resolve(pws); };
-    pws.onerror = () => reject(new Error('Pointer socket connection failed'));
-    pws.onclose = () => { if (state.pointerWs === pws) state.pointerWs = null; };
-  });
+  if (state.pointerWs && state.pointerWs.readyState === WebSocket.OPEN) return state.pointerWs;
+  if (state.pointerSocketPromise) return state.pointerSocketPromise;
+
+  state.pointerSocketPromise = (async () => {
+    const res = await sendRequest('ssap://com.webos.service.networkinput/getPointerInputSocket');
+    const path = res.payload && res.payload.socketPath;
+    if (!path) throw new Error('TV did not return a pointer socket');
+
+    return await new Promise((resolve, reject) => {
+      const pws = new WebSocket(path);
+      const timeout = setTimeout(() => {
+        try { pws.close(); } catch (_) {}
+        reject(new Error('Pointer socket timed out'));
+      }, 5000);
+
+      pws.onopen = () => {
+        clearTimeout(timeout);
+        state.pointerWs = pws;
+        log('Pointer socket ready');
+        resolve(pws);
+      };
+
+      pws.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error('Pointer socket connection failed'));
+      };
+
+      pws.onclose = () => {
+        clearTimeout(timeout);
+        if (state.pointerWs === pws) state.pointerWs = null;
+      };
+    });
+  })();
+
+  try { return await state.pointerSocketPromise; }
+  finally { state.pointerSocketPromise = null; }
 }
 
 async function pressButton(name) {
   try {
     const pws = await ensurePointerSocket();
-    pws.send(`type:button\nname:${name}\n\n`);
+    if (pws.readyState !== WebSocket.OPEN) throw new Error('Pointer socket is not connected');
+    pws.send('type:button\nname:' + name + '\n\n');
     log('Button: ' + name);
-  } catch (e) { log('Error: ' + e.message); setStatus(e.message, 'error'); }
+  } catch (e) {
+    log('Button error: ' + e.message);
+    setStatus(e.message, 'error');
+  }
 }
 
-// Wire up controls
 $('btn-power').addEventListener('click', () => cmd('ssap://system/turnOff'));
 $('btn-home').addEventListener('click', () => cmd('ssap://system.launcher/launch', { id: 'com.webos.app.home' }));
-$('btn-mute').addEventListener('click', () => {
-  state.muted = !state.muted;
-  $('btn-mute').textContent = state.muted ? '🔈' : '🔇';
-  cmd('ssap://audio/setMute', { mute: state.muted });
+
+$('btn-mute').addEventListener('click', async () => {
+  const next = !state.muted;
+  try {
+    await sendRequest('ssap://audio/setMute', { mute: next });
+    state.muted = next;
+    updateMuteButton();
+  } catch (e) {
+    log('Error on ssap://audio/setMute: ' + e.message);
+    setStatus(e.message, 'error');
+  }
 });
+
 $('vol-up').addEventListener('click', () => cmd('ssap://audio/volumeUp'));
 $('vol-down').addEventListener('click', () => cmd('ssap://audio/volumeDown'));
 $('ch-up').addEventListener('click', () => cmd('ssap://tv/channelUp'));
@@ -275,8 +517,18 @@ $('ch-down').addEventListener('click', () => cmd('ssap://tv/channelDown'));
 document.querySelectorAll('[data-btn]').forEach(btn => {
   btn.addEventListener('click', () => pressButton(btn.getAttribute('data-btn')));
 });
+
 document.querySelectorAll('[data-media]').forEach(btn => {
   btn.addEventListener('click', () => cmd('ssap://media.controls/' + btn.getAttribute('data-media')));
+});
+
+document.addEventListener('keydown', e => {
+  const map = { ArrowUp:'UP', ArrowDown:'DOWN', ArrowLeft:'LEFT', ArrowRight:'RIGHT', Enter:'ENTER', Escape:'BACK' };
+  const name = map[e.key];
+  if (name && state.connected) {
+    e.preventDefault();
+    pressButton(name);
+  }
 });
 
 $('btn-load-inputs').addEventListener('click', async () => {
@@ -284,17 +536,19 @@ $('btn-load-inputs').addEventListener('click', async () => {
   box.innerHTML = '<span class="placeholder">Loading…</span>';
   try {
     const res = await sendRequest('ssap://tv/getExternalInputList');
-    const devices = (res.payload && res.payload.devices) || [];
+    const devices = Array.isArray(res.payload?.devices) ? res.payload.devices : [];
     box.innerHTML = '';
     if (!devices.length) { box.innerHTML = '<span class="placeholder">No inputs found.</span>'; return; }
     devices.forEach(d => {
       const b = document.createElement('button');
       b.className = 'chip';
-      b.textContent = d.label || d.id;
+      b.textContent = d.label || d.name || d.id || 'Input';
       b.addEventListener('click', () => cmd('ssap://tv/switchInput', { inputId: d.id }));
       box.appendChild(b);
     });
-  } catch (e) { box.innerHTML = `<span class="placeholder">Could not load inputs: ${e.message}</span>`; }
+  } catch (e) {
+    box.innerHTML = '<span class="placeholder">Could not load inputs: ' + escapeHtml(e.message) + '</span>';
+  }
 });
 
 $('btn-load-apps').addEventListener('click', async () => {
@@ -302,17 +556,29 @@ $('btn-load-apps').addEventListener('click', async () => {
   box.innerHTML = '<span class="placeholder">Loading…</span>';
   try {
     const res = await sendRequest('ssap://com.webos.applicationManager/listApps');
-    const apps = (res.payload && res.payload.apps) || [];
+    const apps = Array.isArray(res.payload?.apps) ? res.payload.apps : [];
     box.innerHTML = '';
     if (!apps.length) { box.innerHTML = '<span class="placeholder">No apps found.</span>'; return; }
-    apps.sort((a, b) => (a.title || '').localeCompare(b.title || '')).forEach(app => {
+    apps.sort((a, b) => (a.title || a.id || '').localeCompare(b.title || b.id || ''));
+    apps.forEach(app => {
       const b = document.createElement('button');
       b.className = 'chip';
       b.textContent = app.title || app.id;
       b.addEventListener('click', () => cmd('ssap://system.launcher/launch', { id: app.id }));
       box.appendChild(b);
     });
-  } catch (e) { box.innerHTML = `<span class="placeholder">Could not load apps: ${e.message}</span>`; }
+  } catch (e) {
+    box.innerHTML = '<span class="placeholder">Could not load apps: ' + escapeHtml(e.message) + '</span>';
+  }
+});
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+window.addEventListener('beforeunload', () => {
+  state.manualDisconnect = true;
+  if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
 });
 </script>
 </body>
