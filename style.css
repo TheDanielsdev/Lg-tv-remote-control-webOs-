@@ -220,3 +220,7 @@
     margin: 16px 4px 0;
   }
   .hint a { color: var(--text-dim); }
+
+
+/* Reliability: keep unavailable controls visibly disabled. */
+button:disabled { opacity: .45; cursor: not-allowed; }
